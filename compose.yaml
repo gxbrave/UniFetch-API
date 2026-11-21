@@ -1,0 +1,34 @@
+services:
+  api:
+    build: .
+    image: unifetch-api:local
+    restart: unless-stopped
+    init: true
+    environment:
+      API_TOKEN: "${API_TOKEN:-}"
+      CONTAINER_PORT: "${CONTAINER_PORT:-8000}"
+      DATA_DIR: /data
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
+      TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-true}"
+      RETENTION_HOURS: "${RETENTION_HOURS:-24}"
+      MAX_PENDING_JOBS: "${MAX_PENDING_JOBS:-10}"
+      DOUYIN_COOKIE: "${DOUYIN_COOKIE:-}"
+      XIAOHONGSHU_COOKIE: "${XIAOHONGSHU_COOKIE:-}"
+      BILIBILI_COOKIE: "${BILIBILI_COOKIE:-}"
+      X_COOKIE: "${X_COOKIE:-}"
+    ports:
+      - "${HOST_BIND:-0.0.0.0}:${PORT:-8099}:${CONTAINER_PORT:-8000}"
+    volumes:
+      - media-data:/data
+    shm_size: 512mb
+    mem_limit: 2g
+    cpus: 2
+    stop_grace_period: 5m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  media-data:

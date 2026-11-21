@@ -1,0 +1,25 @@
+UniFetch-API
+
+This implementation incorporates adaptations of video parsing and Motion Photo
+code from tidain/YunX-Desktop, licensed under GNU AGPL version 3.
+Upstream repository: https://github.com/tidain/YunX-Desktop
+Reference commit: 00a030f778a65840e9be65baecb15497a94b04ec
+
+Adapted modules include DouyinParser.kt, XhsParser.kt, BilibiliParser.kt,
+VideoLinkParser.kt, VideoModels.kt, VideoHttp.kt, MotionPhotoWriter.kt.
+Local changes include Python translation, Chromium response capture, best video
+selection, structured image/motion pairing, persistent HTTP jobs, authentication,
+signed media downloads, Docker packaging and Shortcuts integration guidance.
+
+The full license is supplied in LICENSE. Corresponding source for this running
+version is downloadable at /source.tar.gz. The archive excludes runtime tokens,
+platform cookies, user submissions and downloaded media.
+
+This distribution also incorporates the X/Twitter guest GraphQL and media
+normalization principles from FxEmbed/FxEmbed, licensed under the MIT License.
+Vendored reference commit:
+2e9097877863050749f7ab555ce0c77a8caa70b4. The upstream license and source are
+included in vendor/fxembed/LICENSE.md and the /source.tar.gz archive. Local
+changes include a Python implementation of the guest token/GraphQL request,
+raw tweet media normalization, and highest-bitrate variant selection inside the
+single UniFetch-API container.

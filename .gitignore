@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+data/
+test_downloads/
+.pytest_cache/
+source/
+downloads/
+.wrangler/
+node_modules/
+*.part
+*.sqlite3*

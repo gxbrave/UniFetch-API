@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unifetch-api"
+version = "1.0.0"
+description = "Standalone Douyin, Xiaohongshu, Bilibili and X parser/downloader"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31,<3",
+  "Pillow>=10,<12",
+]
+
+[project.optional-dependencies]
+api = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
+test = ["httpx>=0.27,<1"]
+
+[project.scripts]
+unifetch = "yunx_downloader.__main__:main"
+yunx-downloader = "yunx_downloader.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["yunx_downloader*"]
