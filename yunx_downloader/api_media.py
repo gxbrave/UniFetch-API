@@ -10,6 +10,7 @@ import requests
 from PIL import Image
 
 from .core import MediaKind, ParseError, ParseResult, _download_file, _write_motion_photo, save_result
+from .observability import event, step
 
 
 def video_info(path: Path) -> dict:
@@ -30,11 +31,13 @@ def video_info(path: Path) -> dict:
 
 
 def _iphone_container(path: Path) -> dict:
+    step("检查视频轨与分辨率")
     info = video_info(path)
     temporary = path.with_name(path.stem + ".remux.mp4")
     args = ["ffmpeg", "-y", "-v", "error", "-i", str(path), "-map", "0", "-c", "copy"]
     if info["codec"] == "hevc":
         args += ["-tag:v", "hvc1"]
+    step("整理视频容器", codec=info["codec"], width=info["width"], height=info["height"])
     subprocess.run(args + ["-movflags", "+faststart", str(temporary)], check=True, capture_output=True, timeout=120)
     temporary.replace(path)
     return info
@@ -47,6 +50,8 @@ def prepare_media(result: ParseResult, directory: Path) -> list[dict]:
     try:
         for index, media in enumerate(result.medias, 1):
             stem = f"{index:03d}"
+            kind = "live_photo" if media.motion_url else media.kind.value
+            step("下载媒体", media_index=index, media_total=len(result.medias), kind=kind, quality=media.quality)
             if media.kind is MediaKind.VIDEO:
                 # Retry the whole X job at the orchestration layer so refreshed
                 # media order, filenames and reported quality stay consistent.
@@ -55,12 +60,15 @@ def prepare_media(result: ParseResult, directory: Path) -> list[dict]:
                 info = _iphone_container(path)
                 items.append({"kind": "video", "quality": media.quality, "file": path.name,
                               "bytes": path.stat().st_size, **info})
+                event("媒体完成", media_index=index, kind="video", quality=media.quality,
+                      width=info["width"], height=info["height"], bytes=path.stat().st_size)
                 continue
             if media.kind is not MediaKind.IMAGE:
                 raise ParseError("API 当前支持视频和图片", "unsupported")
             original = directory / f"{stem}.original"
             _download_file(session, media.url, original, media.headers, timeout=120)
             image_path = directory / f"{stem}.jpg"
+            step("检查并整理图片", media_index=index)
             with Image.open(original) as image:
                 width, height = image.size
                 if image.format == "JPEG":
@@ -71,15 +79,19 @@ def prepare_media(result: ParseResult, directory: Path) -> list[dict]:
                     "bytes": image_path.stat().st_size, "width": width, "height": height}
             if media.motion_url:
                 motion = directory / f"{stem}.motion.mp4"
+                step("下载 Live 图动态视频", media_index=index)
                 _download_file(session, media.motion_url, motion, media.headers, timeout=120)
                 info = _iphone_container(motion)
                 android = directory / f"{stem}.motion.jpg"
+                step("保存 Live 图配对与 Motion Photo", media_index=index)
                 if not _write_motion_photo(image_path, motion, android):
                     raise ParseError("动态照片封装失败", "unknown")
                 item.update({"kind": "live_photo", "motion_file": motion.name,
                              "motion_photo_file": android.name, "duration": info["duration"],
                              "motion_width": info["width"], "motion_height": info["height"]})
             items.append(item)
+            event("媒体完成", media_index=index, kind=item["kind"], width=width, height=height,
+                  bytes=image_path.stat().st_size)
     finally:
         session.close()
     return items

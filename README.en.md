@@ -137,6 +137,8 @@ docker compose logs --tail=100 -f
 docker compose down
 ```
 
+Console logs are enabled by default. They show incoming requests, queue positions, execution steps, download progress, and final results. Lines for the same job share its `job` ID. `queue_position=2` means one job is ahead, including a currently running job. Tokens, Cookies, and signed URL parameters are omitted.
+
 ## More details
 
 [Reverse proxy and API](docs/DOCKER_API.md) · [Developers: source and tests](docs/DEVELOPMENT.md)

@@ -137,6 +137,8 @@ docker compose logs --tail=100 -f
 docker compose down
 ```
 
+日志默认直接输出到控制台，能看到请求接收、排队位置、当前步骤、下载进度和最终结果。同一个任务的日志会带相同的 `job` ID。`queue_position=2` 表示前面还有一个任务（包括正在运行的任务）。Token、Cookie 和签名参数不会写入日志。
+
 ## 更多说明
 
 [域名反代和 API](docs/DOCKER_API.md) · [开发者：源码和测试](docs/DEVELOPMENT.md)

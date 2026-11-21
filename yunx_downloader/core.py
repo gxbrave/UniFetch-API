@@ -23,6 +23,7 @@ from urllib.request import urlopen
 
 import requests
 
+from .observability import event, step
 
 UA_CHROME = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -150,6 +151,7 @@ def _request(
     allow_redirects: bool = True,
     stream: bool = False,
 ) -> requests.Response:
+    started = time.monotonic()
     try:
         response = session.get(
             url,
@@ -161,6 +163,8 @@ def _request(
         )
     except requests.RequestException as exc:
         raise ParseError(f"网络请求失败：{url}", "network") from exc
+    event("平台响应", host=urlsplit(url).hostname or "", status=response.status_code,
+          elapsed_ms=round((time.monotonic() - started) * 1000, 1))
     if response.status_code in (403, 418, 429):
         raise ParseError(f"平台风控拦截了请求（HTTP {response.status_code}）", "blocked")
     return response
@@ -177,6 +181,7 @@ def _raise_http(response: requests.Response, what: str) -> None:
 def _expand_short(session: requests.Session, link: DetectedLink) -> DetectedLink:
     if not link.short:
         return link
+    step("展开分享短链接", platform=link.platform.value)
     current = link.url
     for _ in range(6):
         response = _request(session, current, headers={"User-Agent": UA_IPHONE}, allow_redirects=False)
@@ -204,6 +209,7 @@ def parse(
     """Parse one platform URL or a full pasted sharing sentence."""
 
     session = requests.Session()
+    step("识别分享链接")
     link = _expand_short(session, detect_link(text))
     if link.platform is Platform.DOUYIN:
         return _parse_douyin(session, link, cookie=cookie, timeout=timeout, browser=browser)
@@ -231,6 +237,7 @@ def _browser_executable(explicit: str | None) -> str | None:
 
 
 def _browser_dump(url: str, *, browser: str | None, timeout: int) -> str:
+    step("抖音：运行浏览器读取页面")
     executable = _browser_executable(browser)
     if not executable:
         raise ParseError(
@@ -388,6 +395,7 @@ def _browser_capture(
 ) -> tuple[str, dict | None, str]:
     """Render a Douyin page and capture its detail JSON before DOM fallback."""
 
+    step("抖音：启动浏览器获取画质列表")
     executable = _browser_executable(browser)
     if not executable:
         raise ParseError(
@@ -459,7 +467,12 @@ def _browser_capture(
         detail: dict | None = None
         html_body = ""
         deadline = time.monotonic() + min(max(timeout, 30), 45)
+        capture_started = time.monotonic()
+        next_notice = capture_started + 10
         while time.monotonic() < deadline:
+            if time.monotonic() >= next_notice:
+                event("等待平台数据", elapsed_ms=round((time.monotonic() - capture_started) * 1000, 1))
+                next_notice = time.monotonic() + 10
             message = client.receive(1.0)
             if not message:
                 continue
@@ -735,7 +748,9 @@ def _parse_douyin(
         else:
             body = _browser_dump(page_url, browser=browser, timeout=timeout)
     except Exception:
+        event("浏览器回退", reason="capture_unavailable")
         body = _browser_dump(page_url, browser=browser, timeout=timeout)
+    step("抖音：提取媒体并选择最高画质")
     page_detail = _douyin_page_detail(body, link.id)
     image_detail = page_detail or detail or {}
     title = str((detail or page_detail or {}).get("desc") or "").strip() or _title_from_html(body) or f"douyin_{link.id}"
@@ -850,6 +865,7 @@ def _xhs_video(note: dict) -> tuple[str, str]:
 
 
 def _parse_xhs(session: requests.Session, link: DetectedLink, *, cookie: str) -> ParseResult:
+    step("小红书：读取笔记页面")
     query = urlsplit(link.url).query
     paths = [f"https://www.xiaohongshu.com/explore/{link.id}", f"https://www.xiaohongshu.com/discovery/item/{link.id}"]
     last_error: Exception | None = None
@@ -1031,6 +1047,7 @@ def _x_graphql_payload(session: requests.Session, tweet_id: str, *, cookie: str 
     }
     cookie_values = dict(_cookie_pairs(cookie))
     if cookie_values.get("auth_token"):
+        step("X：使用账号会话")
         if not cookie_values.get("ct0"):
             raise ParseError("X_COOKIE 需要同时包含 auth_token 和 ct0", "unsupported")
         headers.update({
@@ -1039,6 +1056,7 @@ def _x_graphql_payload(session: requests.Session, tweet_id: str, *, cookie: str 
             "x-twitter-auth-type": "OAuth2Session",
         })
     else:
+        step("X：获取访客会话")
         try:
             activate = session.post(
                 f"{_X_API_ROOT}/1.1/guest/activate.json",
@@ -1060,6 +1078,7 @@ def _x_graphql_payload(session: requests.Session, tweet_id: str, *, cookie: str 
             "x-csrf-token": csrf,
             "x-guest-token": guest_token,
         })
+    step("X：请求作品信息", parser="builtin")
     response = _request(
         session,
         f"{_X_API_ROOT}/graphql/{_X_TWEET_QUERY_ID}/TweetResultByRestId",
@@ -1160,12 +1179,13 @@ def _parse_x(session: requests.Session, link: DetectedLink, *, cookie: str = "")
     try:
         return _parse_x_graphql_payload(_x_graphql_payload(session, link.id, cookie=cookie), link)
     except ParseError as error:
-        logging.getLogger(__name__).info("X built-in parsing failed (%s); using public API", error.category)
+        event("切换备用解析", level=logging.WARNING, reason=error.category, attempt=1)
         return _parse_x_public(session, link)
 
 
 def _parse_x_public(session: requests.Session, link: DetectedLink) -> ParseResult:
     """Use the free FxTwitter endpoint once, without forwarding X credentials."""
+    step("X：免费备用 API", parser="public")
     response = _request(session, f"https://api.fxtwitter.com/status/{link.id}",
                         headers={"User-Agent": "YunX-Media-API/0.1", "Accept": "application/json"}, timeout=30)
     payload = _x_json(response, "X 备用接口")
@@ -1301,6 +1321,7 @@ def _dash_media(
 
 
 def _parse_bilibili(session: requests.Session, link: DetectedLink, *, cookie: str, quality: int | None = None) -> ParseResult:
+    step("B站：读取作品信息与可用画质")
     headers = _bili_headers(cookie)
     view_params = {"bvid": link.id} if link.id.upper().startswith("BV") else {"aid": link.id.lower().removeprefix("av")}
     view = _json_get(session, "https://api.bilibili.com/x/web-interface/view", view_params, headers, "B站视频信息")
@@ -1367,18 +1388,34 @@ def _extension(media: Media) -> str:
 def _download_file(session: requests.Session, url: str, destination: Path, headers: Mapping[str, str], *, timeout: int) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(destination.name + ".part")
+    started = time.monotonic()
+    downloaded = 0
+    next_notice = started + 5
+    event("下载开始", resource_type=destination.suffix.lower())
     try:
         with _request(session, url, headers=headers, timeout=timeout, stream=True) as response:
             _raise_http(response, "媒体下载")
+            length = response.headers.get("Content-Length", "")
+            total = int(length) if length.isascii() and length.isdigit() else 0
             with temporary.open("wb") as output:
                 for chunk in response.iter_content(1024 * 256):
                     if chunk:
                         output.write(chunk)
+                        downloaded += len(chunk)
+                        if time.monotonic() >= next_notice:
+                            event("下载进度", downloaded_bytes=downloaded, total_bytes=total,
+                                  percent=round(min(100, downloaded / total * 100), 1) if total else None)
+                            next_notice = time.monotonic() + 5
         temporary.replace(destination)
-    except Exception:
+    except Exception as error:
+        event("下载失败", level=logging.WARNING, error_type=type(error).__name__,
+              code=error.category if isinstance(error, ParseError) else "network_or_io",
+              downloaded_bytes=downloaded, elapsed_ms=round((time.monotonic() - started) * 1000, 1))
         temporary.unlink(missing_ok=True)
         raise
-    return destination.stat().st_size
+    size = destination.stat().st_size
+    event("下载完成", bytes=size, elapsed_ms=round((time.monotonic() - started) * 1000, 1))
+    return size
 
 
 def _jpeg_still(source: Path, destination: Path) -> Path | None:
@@ -1522,6 +1559,7 @@ def _save_result(result: ParseResult, directory: str | os.PathLike[str], *, cook
                 path = path.with_suffix(".m4s")
             else:
                 try:
+                    step("B站：合并音视频轨")
                     completed = subprocess.run(
                         [ffmpeg, "-y", "-loglevel", "error", "-i", str(video_path), "-i", str(audio_path), "-c", "copy", str(path)],
                         capture_output=True,

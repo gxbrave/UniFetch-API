@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -31,6 +32,8 @@ import requests
 from .api_media import prepare_media
 from .core import MediaKind, ParseError, Platform, _x_public_retry, detect_link, parse
 from .proxy import public_request_url
+from .observability import (RequestLogMiddleware, bind_context, configure_console_logging,
+                            event, request_id, step)
 
 LOG = logging.getLogger("yunx.api")
 
@@ -70,8 +73,10 @@ class JobStore:
         self.lock = threading.Lock()
         with self.connect() as db:
             db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, status TEXT, created REAL, updated REAL, result TEXT, error TEXT)")
-            db.execute("UPDATE jobs SET status='failed', error=?, updated=? WHERE status IN ('queued','running')",
-                       (json.dumps({"code": "restarted", "message": "服务重启中断了任务，请重新提交"}, ensure_ascii=False), time.time()))
+            recovered = db.execute("UPDATE jobs SET status='failed', error=?, updated=? WHERE status IN ('queued','running')",
+                                   (json.dumps({"code": "restarted", "message": "服务重启中断了任务，请重新提交"}, ensure_ascii=False), time.time())).rowcount
+        if recovered:
+            event("恢复中断任务", count=recovered, status="failed")
 
     def connect(self):
         db = sqlite3.connect(self.database, timeout=20)
@@ -79,16 +84,39 @@ class JobStore:
         return db
 
     def submit(self, text: str) -> str:
-        link = detect_link(text)
-        with self.lock, self.connect() as db:
-            count = db.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')").fetchone()[0]
-            if count >= self.settings.max_pending:
-                raise HTTPException(429, "任务队列已满，请稍后重试", headers={"Retry-After": "10"})
-            identity = uuid.uuid4().hex
-            now = time.time()
-            db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?)", (identity, "queued", now, now, None, None))
-        self.executor.submit(self.run, identity, link.url)
+        try:
+            link = detect_link(text)
+        except ParseError as error:
+            event("任务拒绝", level=logging.WARNING, code=error.category)
+            raise
+        with self.lock:
+            with self.connect() as db:
+                pending = db.execute("SELECT status FROM jobs WHERE status IN ('queued','running')").fetchall()
+                count = len(pending)
+                if count >= self.settings.max_pending:
+                    event("队列已满", level=logging.WARNING, pending=count, limit=self.settings.max_pending)
+                    raise HTTPException(429, "任务队列已满，请稍后重试", headers={"Retry-After": "10"})
+                identity = uuid.uuid4().hex
+                now = time.time()
+                db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?)", (identity, "queued", now, now, None, None))
+            running = sum(row["status"] == "running" for row in pending)
+            event("任务入队", job=identity, platform=link.platform.value, source_id=link.id or "short_link",
+                  queue_position=count + 1, ahead=count, running=running, waiting=count - running + 1)
+            # Keep scheduling inside the lock so executor order matches queue order.
+            self.executor.submit(self.run, identity, link.url, request=request_id())
         return identity
+
+    def _log_queue(self):
+        """Called with self.lock held, after committing a queue state change."""
+        with self.connect() as db:
+            rows = db.execute("SELECT id, status FROM jobs WHERE status IN ('queued','running') ORDER BY rowid").fetchall()
+        running = sum(row["status"] == "running" for row in rows)
+        waiting = [row for row in rows if row["status"] == "queued"]
+        for index, row in enumerate(waiting, 1):
+            event("排队位置更新", context=False, job=row["id"], queue_position=running + index,
+                  ahead=running + index - 1, running=running, waiting=len(waiting))
+        if not rows:
+            event("队列空闲", context=False, running=0, waiting=0)
 
     def update(self, identity: str, status: str, *, result=None, error=None):
         with self.connect() as db:
@@ -96,21 +124,39 @@ class JobStore:
                        (status, time.time(), json.dumps(result, ensure_ascii=False) if result else None,
                         json.dumps(error, ensure_ascii=False) if error else None, identity))
 
-    def run(self, identity: str, text: str):
+    def run(self, identity: str, text: str, *, request: str = ""):
+        with bind_context(job=identity, request=request, step=""):
+            self._run(identity, text)
+
+    def _run(self, identity: str, text: str):
         directory = self.settings.data_dir / identity
-        self.update(identity, "running")
+        started = time.monotonic()
         try:
-            platform = detect_link(text).platform.value.upper()
+            with self.lock:
+                row = self.get(identity)
+                self.update(identity, "running")
+                event("任务开始", queue_position=1, waited_ms=round((time.time() - row["created"]) * 1000, 1))
+                self._log_queue()
+            link = detect_link(text)
+            platform = link.platform.value.upper()
             cookie = os.environ.get(f"{platform}_COOKIE", "")
+            step("解析作品", platform=link.platform.value)
             parsed = parse(text, cookie=cookie, browser=os.environ.get("BROWSER_PATH") or None)
+            event("解析完成", platform=parsed.platform.value, media_count=len(parsed.medias),
+                  videos=parsed.video_count,
+                  images=sum(media.kind is MediaKind.IMAGE and not media.motion_url for media in parsed.medias),
+                  live_photos=sum(bool(media.motion_url) for media in parsed.medias),
+                  qualities=list(dict.fromkeys(media.quality for media in parsed.medias if media.quality)))
             if parsed.platform is Platform.DOUYIN and any(media.kind is MediaKind.VIDEO and not media.quality for media in parsed.medias):
                 raise ParseError("未取得最高画质列表，请重新提交", "quality_unavailable")
+            step("准备媒体文件", media_count=len(parsed.medias))
             try:
                 items = prepare_media(parsed, directory)
             except (ParseError, requests.RequestException, subprocess.SubprocessError):
                 if parsed.platform is not Platform.X or parsed._x_public_used:
                     raise
-                LOG.info("job %s: X media fetch failed; retrying public API", identity)
+                event("切换备用解析", level=logging.WARNING, reason="media_fetch_failed", attempt=1)
+                step("X 免费备用 API")
                 # Each directory belongs to one job. Discard the partial attempt
                 # before retrying all media so clients see a consistent result.
                 shutil.rmtree(directory, ignore_errors=True)
@@ -118,6 +164,15 @@ class JobStore:
                 items = prepare_media(parsed, directory)
             self.update(identity, "succeeded", result={"platform": parsed.platform.value, "title": parsed.title,
                                                        "author": parsed.author, "notice": parsed.notice, "media": items})
+            event("任务完成", status="succeeded", media_count=len(items),
+                  videos=sum(item["kind"] == "video" for item in items),
+                  images=sum(item["kind"] == "image" for item in items),
+                  live_photos=sum(item["kind"] == "live_photo" for item in items),
+                  qualities=list(dict.fromkeys(item["quality"] for item in items if item.get("quality"))),
+                  stored_bytes=sum(path.stat().st_size for item in items
+                                   for key in ("file", "motion_file", "motion_photo_file")
+                                   if key in item and (path := directory / item[key]).is_file()),
+                  elapsed_ms=round((time.monotonic() - started) * 1000, 1))
         except Exception as error:
             # Keep platform URLs and cookies out of API responses and log messages.
             code = error.category if isinstance(error, ParseError) else "processing_failed"
@@ -125,9 +180,14 @@ class JobStore:
                         "access_restricted": "平台未向当前会话开放此作品，可能需要在服务端配置 Cookie",
                         "not_found": "作品不存在或不可见", "unsupported": "链接不受支持或需要在服务端配置平台 Cookie",
                         "quality_unavailable": "未取得最高画质列表，请重新提交"}
-            LOG.warning("job %s failed (%s, %s)", identity, code, type(error).__name__)
+            event("任务失败", level=logging.WARNING, status="failed", code=code,
+                  error_type=type(error).__name__, message=messages.get(code, "媒体处理失败，请重新提交"),
+                  elapsed_ms=round((time.monotonic() - started) * 1000, 1))
             self.update(identity, "failed", error={"code": code, "message": messages.get(code, "媒体处理失败，请重新提交")})
             shutil.rmtree(directory, ignore_errors=True)
+        finally:
+            with self.lock:
+                self._log_queue()
 
     def get(self, identity: str) -> dict:
         if len(identity) != 32 or any(c not in "0123456789abcdef" for c in identity):
@@ -145,12 +205,15 @@ class JobStore:
             for row in rows:
                 shutil.rmtree(self.settings.data_dir / row["id"], ignore_errors=True)
                 db.execute("DELETE FROM jobs WHERE id=?", (row["id"],))
+        if rows:
+            event("清理过期任务", count=len(rows))
 
     def close(self):
         self.executor.shutdown(wait=True, cancel_futures=False)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    configure_console_logging()
     settings = settings or Settings.from_env()
     store: JobStore | None = None
 
@@ -159,6 +222,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         nonlocal store
         store = JobStore(settings)
         store.cleanup()
+        event("服务就绪", workers=1, max_pending=settings.max_pending, retention_hours=settings.retention_hours)
 
         async def sweep():
             while True:
@@ -175,6 +239,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except asyncio.CancelledError:
                 pass
             await asyncio.to_thread(store.close)
+            event("服务停止")
 
     app = FastAPI(title="UniFetch-API", version="1.0.0", lifespan=lifespan,
                   description="提交分享文本，轮询任务状态，再下载媒体。对应源码可从 /source.tar.gz 获取。")
@@ -277,11 +342,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/v1/jobs/{identity}", dependencies=[Depends(authenticate)])
     def job(identity: str, request: Request):
-        return describe(identity, request)
+        result = describe(identity, request)
+        event("查询任务", job=identity, status=result["status"])
+        return result
 
     @app.get("/v1/files/{identity}/{name}")
     def download(identity: str, name: str, request: Request, expires: int = 0, sig: str = ""):
         now = time.time()
+        logged_identity = identity if re.fullmatch(r"[0-9a-f]{32}", identity) else "unknown"
+        logged_name = name if re.fullmatch(r"\d{3}(?:\.motion)?\.(?:mp4|mov|jpg|jpeg|png|webp)", name) else "unknown"
         received_signature_length = len(sig)
         suffix = Path(name).suffix.lower()
         normalized_extension = ""
@@ -312,7 +381,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
             LOG.warning(
                 "download_rejected job=%s file=%s reason=%s expires=%d remaining_seconds=%d signature_length=%d parameters=%s",
-                identity, name, reason, expires, int(expires - now), received_signature_length, parameter_flags,
+                logged_identity, logged_name, reason, expires, int(expires - now), received_signature_length, parameter_flags,
             )
             raise HTTPException(401, message, headers={"X-Download-Error": reason})
         row = store.get(identity)
@@ -329,6 +398,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if normalized_extension:
             LOG.warning("download_signature_extension_normalized job=%s extension=%s", identity, normalized_extension)
             headers["X-Download-Signature-Normalized"] = "file-extension"
+        event("发送媒体文件", job=identity, file=name, bytes=path.stat().st_size,
+              range_request="range" in request.headers)
         return FileResponse(path, filename=name, headers=headers)
 
+    app.add_middleware(RequestLogMiddleware)
     return app
