@@ -9,7 +9,7 @@
 | 变量 | 内容 |
 | --- | --- |
 | API地址 | `https://media.example.com`，以实际部署地址为准 |
-| Token | 服务器 `.env` 中的 `API_TOKEN` |
+| Token | 服务器 Compose 环境变量中的 `API_TOKEN` |
 
 快捷指令输入有值时读取“快捷指令输入”；否则读取剪贴板，将结果设为“分享文本”。
 

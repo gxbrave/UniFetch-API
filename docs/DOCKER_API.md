@@ -4,28 +4,17 @@
 
 ## Docker Compose
 
+安装只需要一份 `compose.yaml`，内容见 [README](../README.md)。镜像 `ghcr.io/gxbrave/unifetch-api:latest` 已包含 Python、Chromium、FFmpeg 和全部依赖。填好 Compose 中的 `API_TOKEN` 后启动：
+
 ```bash
-cp .env.example .env
-# 编辑 .env，设置自己的 API_TOKEN，至少 24 个字符。
-docker compose up -d --build
-docker compose ps
+docker compose up -d
 ```
 
-所有端口和平台 Cookie 都通过 Docker 环境变量配置。默认对外端口 `PORT=8099`，默认容器端口 `CONTAINER_PORT=8000`；两项都支持留空使用默认值。Compose 会同时设置容器的监听端口、健康检查和端口映射。
+不需要 Git、源码、`.env` 文件或本地构建。整个服务只有一个容器。
 
-例如：
+端口和 Cookie 直接填写在 Compose 中。`CONTAINER_PORT` 留空时为 `8000`，需与 `ports` 右边的端口一致；默认对外映射为 `8099:8000`。例如改为容器内 `8100`、对外 `9000`，就同时填写 `CONTAINER_PORT: "8100"` 和 `ports: ["9000:8100"]`。
 
-```dotenv
-API_TOKEN=replace-with-your-own-random-secret-at-least-24-characters
-PORT=9000
-CONTAINER_PORT=8100
-DOUYIN_COOKIE=
-XIAOHONGSHU_COOKIE=
-BILIBILI_COOKIE=
-X_COOKIE=
-```
-
-此时从服务器的 `9000` 端口访问，容器内部监听 `8100`。Cookie 留空时不携带账号登录凭证。平台 Cookie 包含 `$` 或 `#` 时，在 `.env` 中用单引号包住整段值。修改配置后执行 `docker compose up -d`，不要只执行 `restart`。
+四个平台 Cookie 留空时不使用账号 Cookie。Cookie 中的 `$` 在 Compose 中需写成 `$$`，`#` 放在带引号的值中。修改配置后执行 `docker compose up -d`，不要只执行 `restart`。
 
 抖音通常可以匿名请求公开作品。小红书和 B 站的内容、画质受登录与账号权限影响。可选的 `X_COOKIE` 需包含 `auth_token` 和 `ct0`；X 优先用容器内解析，失败时最多切换一次免费的公开 FxTwitter API。平台 Cookie 不会发给该备用 API。
 
@@ -119,7 +108,7 @@ Content-Type: application/json
 ```bash
 docker compose logs --tail=100 -f
 docker compose down
-docker compose up -d --build
+docker compose up -d
 ```
 
 任务和媒体保存在 `media-data` 命名卷中。正常停止或更新不会删除该卷。重启时仍未完成的任务会标记为失败，请重新提交。

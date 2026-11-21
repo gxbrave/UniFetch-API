@@ -1,0 +1,6 @@
+# Developer override. Normal installation only needs compose.yaml.
+services:
+  api:
+    image: unifetch-api:local
+    build:
+      context: .

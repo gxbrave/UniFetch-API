@@ -4,6 +4,21 @@ UniFetch-API runs one Python API process. It bundles Chromium for Douyin page ch
 
 The import package remains `yunx_downloader` for compatibility with the original standalone implementation. The project and installed distribution are named `unifetch-api`; the command line tool is `unifetch`.
 
+## Build from source (developers only)
+
+Normal installation only needs the image and Compose file in the README. To change the program itself, clone the repository and build with the developer override:
+
+```bash
+git clone https://github.com/gxbrave/UniFetch-API.git
+cd UniFetch-API
+# Set API_TOKEN in compose.yaml before starting.
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+```
+
+The override switches the image to `unifetch-api:local` and adds the local build context. It is not required for normal installation. `.env.example` is only a reference list of settings; the installation Compose uses values directly in its environment section.
+
+Images for amd64 and arm64 are built and published by GitHub Actions after tests pass. The public installation file has no build context, extra file dependency, or second service.
+
 ## Run tests
 
 ```bash

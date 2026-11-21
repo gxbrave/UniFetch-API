@@ -1,28 +1,29 @@
 services:
   api:
-    build: .
-    image: unifetch-api:local
+    image: ghcr.io/gxbrave/unifetch-api:latest
     restart: unless-stopped
     init: true
-    environment:
-      API_TOKEN: "${API_TOKEN:-}"
-      CONTAINER_PORT: "${CONTAINER_PORT:-8000}"
-      DATA_DIR: /data
-      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-}"
-      TRUST_PROXY_HEADERS: "${TRUST_PROXY_HEADERS:-true}"
-      RETENTION_HOURS: "${RETENTION_HOURS:-24}"
-      MAX_PENDING_JOBS: "${MAX_PENDING_JOBS:-10}"
-      DOUYIN_COOKIE: "${DOUYIN_COOKIE:-}"
-      XIAOHONGSHU_COOKIE: "${XIAOHONGSHU_COOKIE:-}"
-      BILIBILI_COOKIE: "${BILIBILI_COOKIE:-}"
-      X_COOKIE: "${X_COOKIE:-}"
     ports:
-      - "${HOST_BIND:-0.0.0.0}:${PORT:-8099}:${CONTAINER_PORT:-8000}"
+      - "8099:8000"
+    environment:
+      # Required: set your own random password, at least 24 characters.
+      API_TOKEN: ""
+      # Empty = 8000. If changed, use the same port on the right above.
+      CONTAINER_PORT: ""
+      # Optional platform Cookies. Empty = no account Cookie.
+      DOUYIN_COOKIE: ""
+      XIAOHONGSHU_COOKIE: ""
+      BILIBILI_COOKIE: ""
+      X_COOKIE: ""
+      # Optional settings. Empty = use the default.
+      PUBLIC_BASE_URL: ""
+      TRUST_PROXY_HEADERS: ""
+      RETENTION_HOURS: ""
+      MAX_PENDING_JOBS: ""
+      DATA_DIR: /data
     volumes:
       - media-data:/data
     shm_size: 512mb
-    mem_limit: 2g
-    cpus: 2
     stop_grace_period: 5m
     logging:
       driver: json-file

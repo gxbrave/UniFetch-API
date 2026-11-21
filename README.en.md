@@ -2,110 +2,96 @@
 
 [中文](README.md) | **English**
 
-Give it a shared link. It gets the videos and pictures ready, then gives you download links.
+Send sharing text. It gets the videos and pictures ready, then gives you download links.
 
-Think of it as a little helper:
+**Installation needs just one Docker Compose file. The image includes every required program, and the service runs in one container.**
 
-1. You send it some sharing text.
-2. It finds the link and gets the files ready.
-3. Your Shortcut picks up the files and saves them to Photos.
+## How do I install it?
 
-It runs on your server. **You only need one Docker container.**
+You only need **Docker Compose** installed.
 
-## What can it get?
+1. Paste the file below into your Docker panel, or save it as `compose.yaml`.
+2. Fill in `API_TOKEN` with your own random password of at least 24 ASCII characters. This is your “key”.
+3. Click Deploy, or run `docker compose up -d` in the file's folder.
 
-| Platform | Files you can download |
+You can leave the other settings alone. Empty Cookies mean no account Cookie is used.
+
+```yaml
+services:
+  api:
+    image: ghcr.io/gxbrave/unifetch-api:latest
+    restart: unless-stopped
+    init: true
+    ports:
+      - "8099:8000"
+    environment:
+      # Required: set your own random password, at least 24 characters.
+      API_TOKEN: ""
+      # Empty = 8000. If changed, use the same port on the right above.
+      CONTAINER_PORT: ""
+      # Optional platform Cookies. Empty = no account Cookie.
+      DOUYIN_COOKIE: ""
+      XIAOHONGSHU_COOKIE: ""
+      BILIBILI_COOKIE: ""
+      X_COOKIE: ""
+      # Optional settings. Empty = use the default.
+      PUBLIC_BASE_URL: ""
+      TRUST_PROXY_HEADERS: ""
+      RETENTION_HOURS: ""
+      MAX_PENDING_JOBS: ""
+      DATA_DIR: /data
+    volumes:
+      - media-data:/data
+    shm_size: 512mb
+    stop_grace_period: 5m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  media-data:
+```
+
+The image already includes Python, Chromium, FFmpeg, and all project dependencies. Both **amd64 and arm64** are supported; Docker chooses the right version for your machine.
+
+Open `http://YOUR_SERVER_IP:8099` after startup. API instructions are at `/docs`; the health check is at `/health`.
+
+## What can it download?
+
+| Platform | Files |
 | --- | --- |
-| Douyin | Videos, pictures, and the picture/video pair for a Live Photo |
+| Douyin | Videos, pictures, and matching picture/video pairs for Live Photos |
 | Xiaohongshu | Videos and pictures; some posts need a Cookie |
-| Bilibili | Videos; available quality depends on login and account access |
-| X / Twitter | Videos, animated GIF videos, and original pictures; a free backup API is used when built-in parsing fails |
+| Bilibili | Videos; quality depends on login and account access |
+| X / Twitter | Videos, animated GIF videos, and original pictures; a free backup API is used if built-in parsing fails |
 
-It picks the **best quality available for that request**. It does not enlarge a blurry file and call it high quality. It cannot create a quality level the platform does not offer.
+It picks the best quality available for that request. It cannot create a quality level the platform does not offer.
 
-For Live Photos, it returns a matching picture link and video link. A third-party iPhone Shortcut library must turn that pair into a Live Photo. This backend prepares the files.
+## How do I change settings?
 
-## Start in three steps
+Edit the values in your Compose file, then deploy it again.
 
-Use a computer or server with **Git and Docker Compose** installed.
-
-### 1. Get the project
-
-```bash
-git clone https://github.com/gxbrave/UniFetch-API.git
-cd UniFetch-API
-cp .env.example .env
-```
-
-### 2. Fill in the little settings sheet
-
-Open `.env` in a text editor.
-
-**The only required change is `API_TOKEN`.** It is your door key. Replace the example with your own random password of at least 24 characters. Do not use the example text as your password, and do not share your key.
-
-You can run `openssl rand -hex 32` to make a key, then paste its output into the file.
-
-You can leave the ports and Cookies empty. Empty ports use the defaults. Empty Cookies mean no Cookie is used.
-
-```dotenv
-API_TOKEN=replace-with-your-own-random-password-at-least-24-characters
-
-PORT=
-CONTAINER_PORT=
-
-DOUYIN_COOKIE=
-XIAOHONGSHU_COOKIE=
-BILIBILI_COOKIE=
-X_COOKIE=
-```
-
-Values in `.env` become Docker environment variables. You can also set Cookies directly in the `environment` section of `compose.yaml`. Changing ports through `.env` updates the port mapping too.
-
-### 3. Start your helper
-
-```bash
-docker compose up -d --build
-docker compose ps
-```
-
-The first start downloads tools and builds the image. Give it a little time.
-
-On the server, open:
-
-- Home: `http://localhost:8099`
-- API instructions: `http://localhost:8099/docs`
-- Health check: `http://localhost:8099/health`
-
-On another device, replace `localhost` with your server's IP address or domain.
-
-## What do the settings mean?
-
-| Environment variable | When empty | What it does |
+| Setting | When empty | Purpose |
 | --- | --- | --- |
 | `API_TOKEN` | Required | Your API key; at least 24 characters |
-| `PORT` | `8099` | The outside port on your server |
-| `CONTAINER_PORT` | `8000` | The port used inside the container |
-| `HOST_BIND` | `0.0.0.0` | The server IP to listen on; all network interfaces by default |
-| `DOUYIN_COOKIE` | Not used | Your Douyin login Cookie |
-| `XIAOHONGSHU_COOKIE` | Not used | Your Xiaohongshu login Cookie |
-| `BILIBILI_COOKIE` | Not used | Your Bilibili login Cookie |
-| `X_COOKIE` | Not used | Your X login Cookie; include both `auth_token` and `ct0` |
-| `PUBLIC_BASE_URL` | Detected automatically | Set only if you want a fixed public URL and path prefix |
-| `TRUST_PROXY_HEADERS` | `true` | Use reverse proxy headers to build public URLs |
-| `RETENTION_HOURS` | `24` | How many hours to keep downloaded files |
+| `CONTAINER_PORT` | `8000` | Inside port; the right side of `ports` must match if changed |
+| The four `*_COOKIE` values | Not used | Your login Cookie for each platform |
+| `PUBLIC_BASE_URL` | Detected automatically | Usually leave empty; set only for a fixed domain and path |
+| `TRUST_PROXY_HEADERS` | `true` | Use the host and protocol passed by your reverse proxy |
+| `RETENTION_HOURS` | `24` | Hours to keep downloaded files |
 | `MAX_PENDING_JOBS` | `10` | Maximum number of queued or running jobs |
 
-For example, `PORT=9000` and `CONTAINER_PORT=8100` connect server port `9000` to container port `8100`. You can change either setting on its own. The app and its health check both follow the container port.
+`8099:8000` means “server port 8099 connects to container port 8000”. To change only the outside port, edit the left number.
 
-A Cookie is a platform's login pass. Try public content without one first. If login is needed, copy that platform's Cookie from your own browser. Put single quotes around a Cookie in `.env` if it contains `$` or `#`. X Cookies are sent only to X's official API, never to the free backup API.
+A Cookie is a platform's login pass. Try leaving it empty first. An X Cookie needs both `auth_token` and `ct0`. If a Cookie contains `$`, write it as `$$` in Compose; one literal `$` reaches the container. X Cookies are never sent to the free backup API.
 
-**After editing `.env`, run `docker compose up -d` again to apply the changes.**
+Files and jobs live in a Docker volume. Normal stops and updates keep your data. Expired files are cleaned up automatically.
 
-## How do I ask it for a file?
+## How do I send a link?
 
-### Send a link
-
-Replace `YOUR_TOKEN` with your key and replace the sharing text with real content:
+Replace `YOUR_TOKEN` with your key and use your own server address:
 
 ```bash
 curl -X POST 'http://localhost:8099/v1/jobs' \
@@ -114,74 +100,47 @@ curl -X POST 'http://localhost:8099/v1/jobs' \
   -d '{"text":"Paste sharing text containing a link here"}'
 ```
 
-It returns a `poll_url`. That means “come here to check progress.”
+It returns a `poll_url`: “come here to check progress”. Visit it every two seconds using the same Token:
 
-### Check if it is ready
+- `queued` / `running`: still getting ready; wait a little.
+- `succeeded`: download the files in `media`, then stop waiting.
+- `failed`: show `error.message`, then stop waiting.
 
-Visit `poll_url` every two seconds with the same `Authorization` header.
+Use complete download URLs, including `expires` and `sig`. File downloads do not need the API Token.
 
-| `status` | Meaning | What to do |
-| --- | --- | --- |
-| `queued` | Waiting in line | Wait a little |
-| `running` | Getting files ready | Wait a little |
-| `succeeded` | Ready | Download the items in `media` and stop waiting |
-| `failed` | This attempt did not work | Show `error.message` and stop waiting |
+## iPhone Shortcuts
 
-Each download URL already has a temporary pass. File downloads do not need the API Token. Use the full URL, including its `expires` and `sig` parameters.
+Follow this order: **read sharing text → submit a job → wait for the result → save the media**.
 
-## How do I connect an iPhone Shortcut?
-
-Store two values in your Shortcut: your server URL and your `API_TOKEN`.
-
-Then follow these steps:
-
-1. Read sharing text or text from the clipboard.
-2. POST the text to `/v1/jobs` with your Token.
-3. Check the returned `poll_url`. Stop waiting on success or failure.
-4. On success, read each item in `media` and save it according to its type.
-
-| `kind` | How to save it |
+| `kind` | How to save |
 | --- | --- |
-| `video` | Download `url` → Apple's “Save to Photo Album” action |
-| `image` | Download `url` → Apple's “Save to Photo Album” action |
-| `live_photo` | Pass that item's `url` and `motion_url` to a third-party Live Photo Shortcut library |
+| `video` / `image` | Download `url`, then use Apple's “Save to Photo Album” action |
+| `live_photo` | Send the same item's `url` and `motion_url` to a third-party Live Photo Shortcut library |
 
-`motion_photo_url` is a file for Android galleries that support Motion Photos.
+Each picture is already matched to its motion video. Your chosen library creates and saves the iPhone Live Photo. `motion_photo_url` is for Android galleries that support Motion Photos.
 
-[English step-by-step guide](docs/SHORTCUTS.en.md) · [中文逐步说明](docs/SHORTCUTS.md)
+[English Shortcut guide](docs/SHORTCUTS.en.md) · [中文说明](docs/SHORTCUTS.md)
 
-## Use your own domain
+## Updates, logs, and stopping
 
-Point your reverse proxy at your server's outside port, such as `8099`. With the default settings, the backend builds `poll_url` and download URLs from the request and proxy headers.
-
-Your proxy must pass the original host and protocol. If you use a path prefix such as `/media`, pass that prefix too. See the examples in [deployment and API details](docs/DOCKER_API.md). You can usually leave `PUBLIC_BASE_URL` empty.
-
-## Logs, updates, and stopping
+Run these commands in the folder containing `compose.yaml`:
 
 ```bash
-# See what is happening
-docker compose logs --tail=100 -f
+# Update
+docker compose pull
+docker compose up -d
 
-# Get the latest version and update
-git pull --ff-only
-docker compose up -d --build
+# Read logs
+docker compose logs --tail=100 -f
 
 # Stop
 docker compose down
 ```
 
-Downloaded files and job records live in a Docker volume. A normal stop or update keeps them. Expired files are cleaned up automatically.
+## More details
 
-## For developers
+[Reverse proxy and API](docs/DOCKER_API.md) · [Developers: source and tests](docs/DEVELOPMENT.md)
 
-[Parser details and tests](docs/DEVELOPMENT.md) · [Docker API](docs/DOCKER_API.md)
+This project uses [AGPL-3.0](LICENSE). If you modify it and offer it over a network, provide the corresponding source under that license. The running service includes source and licenses at `/source.tar.gz`, without Tokens, Cookies, or downloads.
 
-X first uses the Python parser inside the same container. If the session cannot see a post, parsing fails, or media cannot be downloaded, it switches to the free FxTwitter API at most once. If the backup also fails, the job ends as `failed`.
-
-## Open source
-
-This project uses [AGPL-3.0](LICENSE). If you modify it and offer it over a network, you must provide the corresponding source under that license. The running service serves its current source at `/source.tar.gz`, without `.env`, Cookies, or downloaded files.
-
-Some Douyin, Xiaohongshu, Bilibili, and Motion Photo logic is adapted from [YunX-Desktop](https://github.com/tidain/YunX-Desktop). The X parser is based on [FxEmbed](https://github.com/FxEmbed/FxEmbed). Its MIT license is kept in [vendor/fxembed/LICENSE.md](vendor/fxembed/LICENSE.md). See [NOTICE](NOTICE) for attribution.
-
-Please download content you have permission to save.
+Some logic is adapted from [YunX-Desktop](https://github.com/tidain/YunX-Desktop); the X parser is based on [FxEmbed](https://github.com/FxEmbed/FxEmbed). See [NOTICE](NOTICE) for attribution. Download content you have permission to save.

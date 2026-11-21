@@ -11,7 +11,7 @@ Add two Text values:
 | Value | Example |
 | --- | --- |
 | Server URL | `https://media.example.com` — replace it with your own address |
-| Token | The `API_TOKEN` from your server's `.env` |
+| Token | The `API_TOKEN` in your server's Compose environment |
 
 Use the Shortcut Input as your sharing text. If it is empty, read the clipboard instead.
 

@@ -1,5 +1,9 @@
 FROM python:3.12-slim-bookworm
 
+LABEL org.opencontainers.image.source="https://github.com/gxbrave/UniFetch-API" \
+    org.opencontainers.image.title="UniFetch-API" \
+    org.opencontainers.image.licenses="AGPL-3.0-only"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     BROWSER_PATH=/usr/bin/chromium \
@@ -19,11 +23,11 @@ RUN --mount=type=cache,target=/root/.cache/pip python -c \
     "import subprocess, sys, tomllib; p=tomllib.load(open('pyproject.toml','rb')); subprocess.check_call([sys.executable,'-m','pip','install','setuptools>=68','wheel',*p['project']['dependencies'],*p['project']['optional-dependencies']['api']])"
 COPY yunx_downloader ./yunx_downloader
 RUN pip install --no-cache-dir --no-deps --no-build-isolation .
-COPY LICENSE NOTICE README.md README.en.md Dockerfile compose.yaml .env.example .dockerignore .gitignore ./
+COPY LICENSE NOTICE README.md README.en.md Dockerfile compose.yaml compose.build.yaml .env.example .dockerignore .gitignore ./
 COPY docs ./docs
 COPY vendor ./vendor
 COPY tests ./tests
-RUN tar -czf /app/source.tar.gz LICENSE NOTICE README.md README.en.md Dockerfile compose.yaml \
+RUN tar -czf /app/source.tar.gz LICENSE NOTICE README.md README.en.md Dockerfile compose.yaml compose.build.yaml \
     .env.example .dockerignore .gitignore pyproject.toml requirements.txt yunx_downloader docs vendor tests \
     && mkdir -p /data && chown -R app:app /data /app
 
