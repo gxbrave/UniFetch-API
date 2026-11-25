@@ -1,7 +1,12 @@
 import unittest
 import json
+from unittest.mock import patch
+from urllib.parse import quote
 
-from yunx_downloader.core import Media, MediaKind, _douyin_best_video, _douyin_image_urls, _douyin_page_detail, detect_link
+import requests
+
+from yunx_downloader.core import (Media, MediaKind, _douyin_best_video, _douyin_image_urls,
+                                 _douyin_page_detail, _parse_douyin, detect_link)
 
 
 class CoreTest(unittest.TestCase):
@@ -16,6 +21,52 @@ class CoreTest(unittest.TestCase):
         body = "".join("<script>self.__pace_f.push(" + json.dumps([1, chunk]) + ")</script>" for chunk in (record[:split], record[split:]))
         self.assertEqual(_douyin_page_detail(body, "12345678901"), detail)
         self.assertIsNone(_douyin_page_detail(body, "99999999999"))
+
+    def test_byte_counted_flight_text_does_not_hide_following_live_pairs(self):
+        # Real /note pages put a text row immediately before the work row,
+        # without a newline. Its hex length counts UTF-8 bytes, not characters.
+        detail = {"awemeId": "7687913416032433338", "desc": "中国人会飞", "images": [
+            {"urlList": [f"https://example/{i}.jpg"],
+             "video": {"playAddr": [{"src": f"https://example/{i}.mp4"}]}}
+            for i in range(7)
+        ]}
+        text = json.dumps({"title": "中文🎈\n7:这不是记录", "image": "普通文本"}, ensure_ascii=False)
+        row = "a:T" + format(len(text.encode("utf-8")), "x") + "," + text
+        row += '7:' + json.dumps(["$", "$L9", None, {"aweme": {"detail": detail}}], ensure_ascii=False) + "\n"
+        # Script chunk boundaries need not coincide with Flight row boundaries.
+        chunks = [row[:5], row[5:17], row[17:-35], row[-35:]]
+        body = "".join("<script>self.__pace_f.push(" + json.dumps([1, chunk]) + ")</script>" for chunk in chunks)
+        self.assertEqual(_douyin_page_detail(body, detail["awemeId"]), detail)
+        self.assertIsNone(_douyin_page_detail(body, "99999999999"))
+        with patch("yunx_downloader.core._browser_dump", return_value=body):
+            result = _parse_douyin(requests.Session(), detect_link("https://www.douyin.com/note/" + detail["awemeId"]),
+                                   cookie="", timeout=90, browser=None)
+        self.assertEqual([(m.url, m.motion_url) for m in result.medias],
+                         [(f"https://example/{i}.jpg", f"https://example/{i}.mp4") for i in range(7)])
+        self.assertEqual(result.notice, "")
+
+    def test_flight_text_json_can_contain_raw_or_url_encoded_mixed_album(self):
+        detail = {"awemeId": "12345678901", "images": [
+            {"urlList": ["https://example/a.jpg?sign=%22value%22"], "video": None},
+            {"urlList": ["https://example/b.jpg"], "video": {"playAddr": [{"src": "https://example/b.mp4"}]}},
+        ]}
+        raw = json.dumps({"detail": detail})
+        for text in (raw, quote(raw)):
+            with self.subTest(encoded=text.startswith("%")):
+                row = "8:T" + format(len(text.encode("utf-8")), "x") + "," + text
+                body = "<script>self.__pace_f.push(" + json.dumps([1, row]) + ")</script>"
+                self.assertEqual(_douyin_page_detail(body, detail["awemeId"]), detail)
+                with patch("yunx_downloader.core._browser_dump", return_value=body):
+                    result = _parse_douyin(requests.Session(), detect_link("https://www.douyin.com/note/" + detail["awemeId"]),
+                                           cookie="", timeout=90, browser=None)
+                self.assertEqual([m.url for m in result.medias], [image["urlList"][0] for image in detail["images"]])
+                self.assertEqual([m.motion_url for m in result.medias], ["", "https://example/b.mp4"])
+
+    def test_truncated_flight_text_does_not_parse_its_contents_as_a_work(self):
+        detail = {"awemeId": "12345678901", "images": [{"urlList": ["https://example/a.jpg"]}]}
+        row = '8:Tffff,7:' + json.dumps(detail) + "\n"
+        body = "<script>self.__pace_f.push(" + json.dumps([1, row]) + ")</script>"
+        self.assertIsNone(_douyin_page_detail(body, detail["awemeId"]))
 
     def test_share_text_rules(self):
         self.assertEqual(detect_link("复制 https://v.douyin.com/U_XuuBSHU6c/").platform.value, "douyin")

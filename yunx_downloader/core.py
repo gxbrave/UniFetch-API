@@ -678,6 +678,46 @@ def _image_extension(url: str) -> str:
     return ".webp"
 
 
+def _douyin_flight_values(chunks: list[str]) -> Iterable[object]:
+    """Decode Flight rows, including byte-counted text without a trailing newline."""
+    stream = "".join(chunks).encode("utf-8")
+    header = re.compile(rb"[0-9a-f]+:")
+    text_header = re.compile(rb"T([0-9a-f]+),")
+    offset = 0
+    while offset < len(stream):
+        row = header.match(stream, offset)
+        if not row:
+            return
+        offset = row.end()
+        text_row = text_header.match(stream, offset)
+        if text_row:
+            start = text_row.end()
+            end = start + int(text_row.group(1), 16)
+            if end > len(stream):
+                return
+            payload = stream[start:end]
+            offset = end
+        else:
+            end = stream.find(b"\n", offset)
+            if end == -1:
+                end = len(stream)
+            payload = stream[offset:end]
+            offset = end + 1
+        try:
+            value = payload.decode("utf-8")
+        except ValueError:
+            continue
+        # Douyin also puts URL-encoded RENDER_DATA in text rows. Try JSON
+        # first so percent escapes inside signed media URLs stay intact.
+        for candidate in (value, unquote(value)) if text_row else (value,):
+            try:
+                yield json.loads(candidate)
+                break
+            except ValueError:
+                # Import/hint rows and ordinary text are not work detail JSON.
+                continue
+
+
 def _douyin_page_detail(body: str, expected_id: str) -> dict | None:
     """Read SSR or React Flight data and select this work's structured object."""
     def find(value: object) -> dict | None:
@@ -712,15 +752,10 @@ def _douyin_page_detail(body: str, expected_id: str) -> dict | None:
                 chunks.append(value[1])
         except (ValueError, IndexError, TypeError):
             continue
-    for line in "".join(chunks).splitlines():
-        record = re.match(r'[0-9a-f]+:(.*)', line)
-        if record:
-            try:
-                found = find(json.loads(record.group(1)))
-                if found:
-                    return found
-            except ValueError:
-                continue
+    for value in _douyin_flight_values(chunks):
+        found = find(value)
+        if found:
+            return found
     return None
 
 
